@@ -5,7 +5,8 @@ import { Card } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Heart, MessageCircle, Repeat2, User, Trash2 } from "lucide-react"
+import { Heart, MessageCircle, Repeat2, User, Trash2, MoreVertical } from "lucide-react"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import { createBrowserClient } from "@/lib/supabase/client"
@@ -222,6 +223,22 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
     }
   }
 
+  const handleDeletePost = async () => {
+    if (!confirm("Are you sure you want to delete this post?")) return
+
+    try {
+      const { error } = await supabase.from("posts").delete().eq("id", post.id).eq("user_id", currentUserId)
+
+      if (error) throw error
+
+      // Reload page to refresh feed
+      window.location.reload()
+    } catch (error) {
+      console.error("Error deleting post:", error)
+      alert("Failed to delete post")
+    }
+  }
+
   return (
     <Card className="p-4 transition-all duration-300 hover:bg-muted/50 hover:shadow-md hover:border-primary/20">
       <div className="flex gap-3">
@@ -243,6 +260,25 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
             <span className="text-sm text-muted-foreground">
               · {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
             </span>
+            {post.user_id === currentUserId && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto h-8 w-8 p-0 transition-all hover:scale-110 active:scale-90"
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handleDeletePost} className="text-destructive focus:text-destructive">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete post
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
 
           {post.content && <p className="mt-2 text-pretty whitespace-pre-wrap">{post.content}</p>}

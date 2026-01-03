@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Paperclip, X, User, Home, MessageSquare, Users } from "lucide-react"
+import { Paperclip, X, User, Home, MessageSquare, Users, Bell } from "lucide-react"
 import { uploadFile } from "@/app/actions/upload"
 import Link from "next/link"
 import { PostCard } from "@/components/post-card"
+import { Badge } from "@/components/ui/badge"
 
 interface Post {
   id: string
@@ -38,14 +39,16 @@ export function FeedContent({ userId }: { userId: string }) {
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null)
   const [attachmentType, setAttachmentType] = useState<"image" | "video" | null>(null)
   const [isPosting, setIsPosting] = useState(false)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+  const [unreadMessages, setUnreadMessages] = useState(0)
 
   const supabase = useMemo(() => createBrowserClient(), [])
 
   useEffect(() => {
     loadCurrentProfile()
     loadPosts()
+    loadNotificationCounts()
 
-    // Subscribe to new posts
     const channel = supabase
       .channel("posts")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, (payload) => {
@@ -55,8 +58,51 @@ export function FeedContent({ userId }: { userId: string }) {
       })
       .subscribe()
 
+    const notifChannel = supabase
+      .channel(`notifications-badge-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          loadNotificationCounts()
+        },
+      )
+      .subscribe()
+
+    const messagesChannel = supabase
+      .channel(`messages-badge-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "direct_messages",
+        },
+        async (payload) => {
+          const newMsg = payload.new as any
+          const { data: isParticipant } = await supabase
+            .from("conversation_participants")
+            .select("*")
+            .eq("conversation_id", newMsg.conversation_id)
+            .eq("user_id", userId)
+            .single()
+
+          if (isParticipant && newMsg.user_id !== userId) {
+            loadNotificationCounts()
+          }
+        },
+      )
+      .subscribe()
+
     return () => {
       supabase.removeChannel(channel)
+      supabase.removeChannel(notifChannel)
+      supabase.removeChannel(messagesChannel)
     }
   }, [supabase])
 
@@ -70,7 +116,6 @@ export function FeedContent({ userId }: { userId: string }) {
 
     if (data) {
       setPosts(data)
-      // Load profiles for all post authors
       const userIds = [...new Set(data.map((p) => p.user_id))]
       userIds.forEach(loadProfile)
     }
@@ -155,9 +200,41 @@ export function FeedContent({ userId }: { userId: string }) {
     }
   }
 
+  const loadNotificationCounts = async () => {
+    const { data: notifData } = await supabase
+      .from("notifications")
+      .select("id", { count: "exact" })
+      .eq("user_id", userId)
+      .eq("is_read", false)
+
+    setUnreadNotifications(notifData?.length || 0)
+
+    const { data: conversations } = await supabase
+      .from("conversation_participants")
+      .select("conversation_id")
+      .eq("user_id", userId)
+
+    if (conversations) {
+      let totalUnread = 0
+      for (const conv of conversations) {
+        const { data: lastMsg } = await supabase
+          .from("direct_messages")
+          .select("user_id")
+          .eq("conversation_id", conv.conversation_id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .single()
+
+        if (lastMsg && lastMsg.user_id !== userId) {
+          totalUnread++
+        }
+      }
+      setUnreadMessages(totalUnread)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background">
-      {/* Navigation */}
       <nav className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between">
@@ -178,10 +255,42 @@ export function FeedContent({ userId }: { userId: string }) {
                     Communities
                   </Link>
                 </Button>
-                <Button variant="ghost" size="sm" asChild className="transition-all hover:scale-105 active:scale-95">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  asChild
+                  className="transition-all hover:scale-105 active:scale-95 relative"
+                >
                   <Link href="/messages">
                     <MessageSquare className="h-5 w-5 mr-2" />
                     Messages
+                    {unreadMessages > 0 && (
+                      <Badge
+                        variant="destructive"
+                        className="absolute -top-1 -right-1 h-5 min-w-5 flex items-center justify-center p-1 text-xs"
+                      >
+                        {unreadMessages}
+                      </Badge>
+                    )}
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  asChild
+                  className="transition-all hover:scale-105 active:scale-95 relative"
+                >
+                  <Link href="/notifications">
+                    <Bell className="h-5 w-5 mr-2" />
+                    Inbox
+                    {unreadNotifications > 0 && (
+                      <Badge
+                        variant="destructive"
+                        className="absolute -top-1 -right-1 h-5 min-w-5 flex items-center justify-center p-1 text-xs"
+                      >
+                        {unreadNotifications}
+                      </Badge>
+                    )}
                   </Link>
                 </Button>
               </div>
@@ -202,7 +311,6 @@ export function FeedContent({ userId }: { userId: string }) {
       </nav>
 
       <div className="container mx-auto px-4 py-6 max-w-2xl">
-        {/* Create Post */}
         <Card className="p-4 mb-6 animate-in fade-in slide-in-from-top-4 duration-500">
           <div className="flex gap-3">
             {currentProfile && (
@@ -268,7 +376,6 @@ export function FeedContent({ userId }: { userId: string }) {
           </div>
         </Card>
 
-        {/* Feed */}
         <div className="space-y-4">
           {posts.map((post, index) => (
             <div

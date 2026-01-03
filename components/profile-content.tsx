@@ -332,14 +332,24 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
           <div className="flex gap-4 text-sm">
             {canViewFollowers ? (
               <>
-                <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => router.push(`/profile/${profileId}/following`)}
+                  className="p-0 h-auto font-normal hover:underline transition-all hover:scale-105"
+                >
                   <span className="font-semibold">{followingCount}</span>{" "}
                   <span className="text-muted-foreground">Following</span>
-                </div>
-                <div>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => router.push(`/profile/${profileId}/followers`)}
+                  className="p-0 h-auto font-normal hover:underline transition-all hover:scale-105"
+                >
                   <span className="font-semibold">{followersCount}</span>{" "}
                   <span className="text-muted-foreground">Followers</span>
-                </div>
+                </Button>
               </>
             ) : (
               <div className="flex items-center gap-2 text-muted-foreground">

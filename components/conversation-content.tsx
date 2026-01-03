@@ -151,7 +151,7 @@ export function ConversationContent({ conversationId, userId }: { conversationId
         }
       }
 
-      await supabase.from("direct_messages").insert({
+      const { error: messageError } = await supabase.from("direct_messages").insert({
         conversation_id: conversationId,
         user_id: userId,
         content: newMessage.trim() || null,
@@ -159,10 +159,20 @@ export function ConversationContent({ conversationId, userId }: { conversationId
         video_url: videoUrl,
       })
 
+      if (messageError) {
+        console.error("[v0] Error inserting message:", messageError)
+        alert("Failed to send message")
+        setIsSending(false)
+        return
+      }
+
+      console.log("[v0] Message sent successfully")
+
       setNewMessage("")
       clearAttachment()
     } catch (error) {
-      console.error("Error sending message:", error)
+      console.error("[v0] Error sending message:", error)
+      alert("An error occurred while sending the message")
     } finally {
       setIsSending(false)
     }
