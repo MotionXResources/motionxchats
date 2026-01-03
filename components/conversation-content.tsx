@@ -187,7 +187,7 @@ export function ConversationContent({ conversationId, userId }: { conversationId
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => router.push("/messages")}
+              onClick={() => router.back()}
               className="transition-transform active:scale-95"
             >
               <ArrowLeft className="h-5 w-5" />

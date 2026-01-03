@@ -32,71 +32,189 @@ interface ConversationWithDetails {
 
 export function MessagesContent({ userId }: { userId: string }) {
   const [conversations, setConversations] = useState<ConversationWithDetails[]>([])
+  const [loading, setLoading] = useState(true)
   const router = useRouter()
   const supabase = useMemo(() => createBrowserClient(), [])
 
   useEffect(() => {
     loadConversations()
-  }, [])
+
+    const participantsChannel = supabase
+      .channel("user-conversations")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "conversation_participants",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          console.log("[v0] Conversation participants changed, reloading...")
+          loadConversations()
+        },
+      )
+      .subscribe()
+
+    const messagesChannel = supabase
+      .channel("all-messages")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "direct_messages",
+        },
+        () => {
+          console.log("[v0] New message received, reloading conversations...")
+          loadConversations()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(participantsChannel)
+      supabase.removeChannel(messagesChannel)
+    }
+  }, [userId])
 
   const loadConversations = async () => {
-    // Get user's conversations
-    const { data: userConvs } = await supabase
-      .from("conversation_participants")
-      .select("conversation_id")
-      .eq("user_id", userId)
+    console.log("[v0] Loading conversations for user:", userId)
+    setLoading(true)
 
-    if (!userConvs) return
-
-    const conversationDetails: ConversationWithDetails[] = []
-
-    for (const conv of userConvs) {
-      // Get conversation
-      const { data: conversation } = await supabase
-        .from("conversations")
-        .select("*")
-        .eq("id", conv.conversation_id)
-        .single()
-
-      // Get other participant
-      const { data: otherParticipant } = await supabase
+    try {
+      const { data: userConvs, error: convsError } = await supabase
         .from("conversation_participants")
-        .select("user_id")
-        .eq("conversation_id", conv.conversation_id)
-        .neq("user_id", userId)
-        .single()
+        .select("conversation_id")
+        .eq("user_id", userId)
 
-      if (!otherParticipant) continue
-
-      // Get other user's profile
-      const { data: profile } = await supabase.from("profiles").select("*").eq("id", otherParticipant.user_id).single()
-
-      // Get last message
-      const { data: lastMessage } = await supabase
-        .from("direct_messages")
-        .select("content, created_at")
-        .eq("conversation_id", conv.conversation_id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single()
-
-      if (conversation && profile) {
-        conversationDetails.push({
-          conversation,
-          otherUser: profile,
-          lastMessage: lastMessage || undefined,
-        })
+      if (convsError) {
+        console.error("[v0] Error fetching conversations:", convsError)
+        setLoading(false)
+        return
       }
+
+      console.log("[v0] User participates in", userConvs?.length || 0, "conversations")
+
+      if (!userConvs || userConvs.length === 0) {
+        setConversations([])
+        setLoading(false)
+        return
+      }
+
+      const conversationMap = new Map<string, ConversationWithDetails>()
+
+      for (const conv of userConvs) {
+        console.log("[v0] Loading conversation:", conv.conversation_id)
+
+        // Get conversation
+        const { data: conversation, error: convError } = await supabase
+          .from("conversations")
+          .select("*")
+          .eq("id", conv.conversation_id)
+          .single()
+
+        if (convError) {
+          console.error("[v0] Error fetching conversation:", convError)
+          continue
+        }
+
+        // Get other participant
+        const { data: otherParticipant, error: partError } = await supabase
+          .from("conversation_participants")
+          .select("user_id")
+          .eq("conversation_id", conv.conversation_id)
+          .neq("user_id", userId)
+          .single()
+
+        if (partError) {
+          console.error("[v0] Error fetching other participant:", partError)
+          continue
+        }
+
+        if (!otherParticipant) {
+          console.log("[v0] No other participant found for conversation:", conv.conversation_id)
+          continue
+        }
+
+        // Get other user's profile
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", otherParticipant.user_id)
+          .single()
+
+        if (profileError) {
+          console.error("[v0] Error fetching profile:", profileError)
+          continue
+        }
+
+        const { data: messages, error: messagesError } = await supabase
+          .from("direct_messages")
+          .select("content, created_at")
+          .eq("conversation_id", conv.conversation_id)
+          .order("created_at", { ascending: false })
+
+        if (messagesError) {
+          console.error("[v0] Error fetching messages:", messagesError)
+          continue
+        }
+
+        const hasMessages = messages && messages.length > 0
+
+        const { data: followRelationship, error: followError } = await supabase
+          .from("follows")
+          .select("id")
+          .eq("follower_id", userId)
+          .eq("following_id", otherParticipant.user_id)
+          .maybeSingle()
+
+        if (followError) {
+          console.error("[v0] Error checking follow relationship:", followError)
+        }
+
+        const isFollowing = !!followRelationship
+
+        if (!hasMessages && !isFollowing) {
+          console.log("[v0] Skipping conversation - no messages and not following:", profile.username)
+          continue
+        }
+
+        const lastMessage = messages?.[0]
+
+        if (conversation && profile) {
+          const conversationDetail: ConversationWithDetails = {
+            conversation,
+            otherUser: profile,
+            lastMessage: lastMessage || undefined,
+          }
+
+          const existingConv = conversationMap.get(otherParticipant.user_id)
+          const currentTime = lastMessage?.created_at || conversation.created_at
+          const existingTime = existingConv?.lastMessage?.created_at || existingConv?.conversation.created_at
+
+          if (!existingConv || (existingTime && new Date(currentTime).getTime() > new Date(existingTime).getTime())) {
+            console.log("[v0] Added/Updated conversation with", profile.username)
+            conversationMap.set(otherParticipant.user_id, conversationDetail)
+          } else {
+            console.log("[v0] Skipped duplicate conversation with", profile.username)
+          }
+        }
+      }
+
+      const conversationDetails = Array.from(conversationMap.values()).sort((a, b) => {
+        const timeA = a.lastMessage?.created_at || a.conversation.created_at
+        const timeB = b.lastMessage?.created_at || b.conversation.created_at
+        return new Date(timeB).getTime() - new Date(timeA).getTime()
+      })
+
+      console.log("[v0] Total unique conversations loaded:", conversationDetails.length)
+      setConversations(conversationDetails)
+    } catch (error) {
+      console.error("[v0] Unexpected error loading conversations:", error)
+    } finally {
+      setLoading(false)
     }
-
-    // Sort by last message time
-    conversationDetails.sort((a, b) => {
-      const timeA = a.lastMessage?.created_at || a.conversation.created_at
-      const timeB = b.lastMessage?.created_at || b.conversation.created_at
-      return new Date(timeB).getTime() - new Date(timeA).getTime()
-    })
-
-    setConversations(conversationDetails)
   }
 
   return (
@@ -108,7 +226,7 @@ export function MessagesContent({ userId }: { userId: string }) {
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => router.push("/feed")}
+              onClick={() => router.back()}
               className="transition-transform active:scale-95"
             >
               <ArrowLeft className="h-5 w-5" />
@@ -119,7 +237,11 @@ export function MessagesContent({ userId }: { userId: string }) {
       </div>
 
       <div className="container mx-auto px-4 max-w-2xl py-4">
-        {conversations.length > 0 ? (
+        {loading ? (
+          <Card className="p-12 text-center">
+            <p className="text-muted-foreground">Loading conversations...</p>
+          </Card>
+        ) : conversations.length > 0 ? (
           <div className="space-y-2">
             {conversations.map((conv) => (
               <Card

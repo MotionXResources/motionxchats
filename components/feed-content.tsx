@@ -217,15 +217,15 @@ export function FeedContent({ userId }: { userId: string }) {
     if (conversations) {
       let totalUnread = 0
       for (const conv of conversations) {
-        const { data: lastMsg } = await supabase
+        const { data: lastMsg, error } = await supabase
           .from("direct_messages")
           .select("user_id")
           .eq("conversation_id", conv.conversation_id)
           .order("created_at", { ascending: false })
           .limit(1)
-          .single()
+          .maybeSingle()
 
-        if (lastMsg && lastMsg.user_id !== userId) {
+        if (!error && lastMsg && lastMsg.user_id !== userId) {
           totalUnread++
         }
       }

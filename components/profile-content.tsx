@@ -165,37 +165,43 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
     console.log("[v0] Current user:", currentUserId)
 
     try {
-      // Check if conversation exists
-      const { data: myParticipations, error: fetchError } = await supabase
+      console.log("[v0] Checking for existing conversations...")
+
+      // Get all conversations where current user is a participant
+      const { data: myConversations, error: myConvsError } = await supabase
         .from("conversation_participants")
         .select("conversation_id")
         .eq("user_id", currentUserId)
 
-      console.log("[v0] My participations:", myParticipations?.length || 0)
-
-      if (fetchError) {
-        console.error("[v0] Error fetching participations:", fetchError)
+      if (myConvsError) {
+        console.error("[v0] Error fetching my conversations:", myConvsError)
+        throw myConvsError
       }
 
-      if (myParticipations && myParticipations.length > 0) {
-        // Check each conversation to see if it includes the target user
-        for (const participation of myParticipations) {
-          const { data: participants } = await supabase
-            .from("conversation_participants")
-            .select("user_id")
-            .eq("conversation_id", participation.conversation_id)
+      if (myConversations && myConversations.length > 0) {
+        // Check if any of these conversations include the target user
+        const conversationIds = myConversations.map((c) => c.conversation_id)
 
-          if (participants && participants.some((p) => p.user_id === profileId)) {
-            console.log("[v0] Found existing conversation:", participation.conversation_id)
-            router.push(`/messages/${participation.conversation_id}`)
-            return
-          }
+        const { data: sharedConversations, error: sharedError } = await supabase
+          .from("conversation_participants")
+          .select("conversation_id")
+          .eq("user_id", profileId)
+          .in("conversation_id", conversationIds)
+
+        if (sharedError) {
+          console.error("[v0] Error checking for shared conversations:", sharedError)
+        } else if (sharedConversations && sharedConversations.length > 0) {
+          // Found existing conversation, navigate to the most recent one
+          const existingConvId = sharedConversations[0].conversation_id
+          console.log("[v0] Found existing conversation:", existingConvId)
+          router.push(`/messages/${existingConvId}`)
+          return
         }
       }
 
-      console.log("[v0] No existing conversation, creating new one")
+      console.log("[v0] No existing conversation found, creating new one")
 
-      // Create conversation
+      // Create new conversation
       const { data: newConv, error: convError } = await supabase.from("conversations").insert({}).select().single()
 
       if (convError) {
@@ -211,39 +217,21 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
         return
       }
 
-      // Add current user first
-      console.log("[v0] Adding current user as participant")
-      const { error: participant1Error } = await supabase.from("conversation_participants").insert({
-        conversation_id: newConv.id,
-        user_id: currentUserId,
-      })
+      console.log("[v0] Adding both participants")
+      const { error: participantsError } = await supabase.from("conversation_participants").insert([
+        { conversation_id: newConv.id, user_id: currentUserId },
+        { conversation_id: newConv.id, user_id: profileId },
+      ])
 
-      if (participant1Error) {
-        console.error("[v0] Error adding current user:", participant1Error)
+      if (participantsError) {
+        console.error("[v0] Error adding participants:", participantsError)
         // Clean up the conversation
         await supabase.from("conversations").delete().eq("id", newConv.id)
-        alert(`Failed to add you to conversation: ${participant1Error.message}`)
+        alert(`Failed to create conversation: ${participantsError.message}`)
         return
       }
 
-      console.log("[v0] Current user added successfully")
-
-      // Add target user
-      console.log("[v0] Adding target user as participant")
-      const { error: participant2Error } = await supabase.from("conversation_participants").insert({
-        conversation_id: newConv.id,
-        user_id: profileId,
-      })
-
-      if (participant2Error) {
-        console.error("[v0] Error adding target user:", participant2Error)
-        // Clean up
-        await supabase.from("conversations").delete().eq("id", newConv.id)
-        alert(`Failed to add participant: ${participant2Error.message}`)
-        return
-      }
-
-      console.log("[v0] Target user added successfully, navigating to conversation")
+      console.log("[v0] Both participants added successfully, navigating to conversation")
       router.push(`/messages/${newConv.id}`)
     } catch (error) {
       console.error("[v0] Unexpected error in handleMessage:", error)
