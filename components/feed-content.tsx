@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Paperclip, X, User, Home, MessageSquare, Users, Bell, Search } from "lucide-react"
+import { Paperclip, X, User, Home, MessageSquare, Users, Bell, Search, Film } from "lucide-react"
 import { uploadFile } from "@/app/actions/upload"
 import Link from "next/link"
 import { PostCard } from "@/components/post-card"
@@ -201,35 +201,66 @@ export function FeedContent({ userId }: { userId: string }) {
   }
 
   const loadNotificationCounts = async () => {
-    const { data: notifData } = await supabase
+    console.log("[v0] Loading notification counts for user:", userId)
+
+    // Get unread inbox notifications (excluding DM notifications)
+    const { data: notifData, error: notifError } = await supabase
       .from("notifications")
       .select("id", { count: "exact" })
       .eq("user_id", userId)
       .eq("is_read", false)
-      .neq("type", "message") // Exclude message notifications
+      .neq("type", "message")
 
-    setUnreadNotifications(notifData?.length || 0)
+    if (notifError) {
+      console.error("[v0] Error loading notifications:", notifError)
+    } else {
+      console.log("[v0] Unread inbox notifications:", notifData?.length || 0)
+      setUnreadNotifications(notifData?.length || 0)
+    }
 
-    const { data: conversations } = await supabase
+    // Get unread DM conversations
+    const { data: conversations, error: convError } = await supabase
       .from("conversation_participants")
       .select("conversation_id")
       .eq("user_id", userId)
 
+    if (convError) {
+      console.error("[v0] Error loading conversations:", convError)
+      return
+    }
+
     if (conversations) {
       let totalUnread = 0
+
       for (const conv of conversations) {
-        const { data: lastMsg, error } = await supabase
-          .from("direct_messages")
-          .select("user_id")
+        // Get user's last read timestamp for this conversation
+        const { data: readStatus } = await supabase
+          .from("message_reads")
+          .select("last_read_at")
           .eq("conversation_id", conv.conversation_id)
-          .order("created_at", { ascending: false })
-          .limit(1)
+          .eq("user_id", userId)
           .maybeSingle()
 
-        if (!error && lastMsg && lastMsg.user_id !== userId) {
+        // Count unread messages from others since last read
+        const query = supabase
+          .from("direct_messages")
+          .select("id", { count: "exact" })
+          .eq("conversation_id", conv.conversation_id)
+          .neq("user_id", userId) // Only messages from others
+
+        // Filter by messages after last read time
+        if (readStatus?.last_read_at) {
+          query.gt("created_at", readStatus.last_read_at)
+        }
+
+        const { data: unreadMsgs } = await query
+
+        if (unreadMsgs && unreadMsgs.length > 0) {
           totalUnread++
         }
       }
+
+      console.log("[v0] Unread DM conversations:", totalUnread)
       setUnreadMessages(totalUnread)
     }
   }
@@ -254,6 +285,12 @@ export function FeedContent({ userId }: { userId: string }) {
                   <Link href="/search">
                     <Search className="h-5 w-5 mr-2" />
                     Search
+                  </Link>
+                </Button>
+                <Button variant="ghost" size="sm" asChild className="transition-all hover:scale-105 active:scale-95">
+                  <Link href="/reels">
+                    <Film className="h-5 w-5 mr-2" />
+                    Reels
                   </Link>
                 </Button>
                 <Button variant="ghost" size="sm" asChild className="transition-all hover:scale-105 active:scale-95">

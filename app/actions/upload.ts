@@ -1,28 +1,32 @@
 "use server"
 
-import { put } from "@vercel/blob"
-
 export async function uploadFile(formData: FormData) {
   try {
-    const file = formData.get("file") as File
-    if (!file) {
-      return { error: "No file provided" }
-    }
+    // Call the API route from the server side
+    const baseUrl = process.env.NEXT_PUBLIC_VERCEL_URL
+      ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
+      : "http://localhost:3000"
 
-    if (!process.env.BLOB_READ_WRITE_TOKEN) {
-      console.error("BLOB_READ_WRITE_TOKEN is not configured")
-      return { error: "Upload service not configured. Please ensure BLOB_READ_WRITE_TOKEN is set." }
-    }
-
-    const filename = formData.get("filename") as string
-    const blob = await put(filename, file, {
-      access: "public",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
+    const response = await fetch(`${baseUrl}/api/upload`, {
+      method: "POST",
+      body: formData,
     })
 
-    return { url: blob.url }
+    if (!response.ok) {
+      const errorData = await response.json()
+      return {
+        success: false as const,
+        error: errorData.error || "Upload failed",
+      }
+    }
+
+    const result = await response.json()
+    return result
   } catch (error) {
-    console.error("Upload error:", error)
-    return { error: `Failed to upload file: ${error instanceof Error ? error.message : "Unknown error"}` }
+    console.error("[v0] Server action upload error:", error)
+    return {
+      success: false as const,
+      error: error instanceof Error ? error.message : "Upload failed",
+    }
   }
 }

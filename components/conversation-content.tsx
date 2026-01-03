@@ -45,6 +45,7 @@ export function ConversationContent({ conversationId, userId }: { conversationId
   useEffect(() => {
     loadOtherUser()
     loadMessages()
+    markAsRead()
 
     const channel = supabase
       .channel(`conversation-${conversationId}`)
@@ -57,8 +58,16 @@ export function ConversationContent({ conversationId, userId }: { conversationId
           filter: `conversation_id=eq.${conversationId}`,
         },
         (payload) => {
+          console.log("[v0] New message received:", payload.new)
           const newMsg = payload.new as Message
-          setMessages((prev) => [...prev, newMsg])
+          setMessages((prev) => {
+            // Check if message already exists to avoid duplicates
+            if (prev.some((m) => m.id === newMsg.id)) {
+              return prev
+            }
+            return [...prev, newMsg]
+          })
+          markAsRead()
         },
       )
       .on(
@@ -76,13 +85,15 @@ export function ConversationContent({ conversationId, userId }: { conversationId
           }
         },
       )
-      .subscribe()
+      .subscribe((status) => {
+        console.log("[v0] Subscription status:", status)
+      })
 
     return () => {
       supabase.removeChannel(channel)
       updateTypingStatus(false)
     }
-  }, [conversationId])
+  }, [conversationId, supabase, userId])
 
   useEffect(() => {
     scrollToBottom()
@@ -117,12 +128,21 @@ export function ConversationContent({ conversationId, userId }: { conversationId
   }
 
   const updateTypingStatus = async (isTyping: boolean) => {
-    await supabase.from("typing_indicators").upsert({
-      conversation_id: conversationId,
-      user_id: userId,
-      is_typing: isTyping,
-      updated_at: new Date().toISOString(),
-    })
+    try {
+      await supabase.from("typing_indicators").upsert(
+        {
+          conversation_id: conversationId,
+          user_id: userId,
+          is_typing: isTyping,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "conversation_id,user_id",
+        },
+      )
+    } catch (error) {
+      console.error("[v0] Error updating typing status:", error)
+    }
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,13 +216,20 @@ export function ConversationContent({ conversationId, userId }: { conversationId
         }
       }
 
-      const { error: messageError } = await supabase.from("direct_messages").insert({
+      const newMessageData = {
         conversation_id: conversationId,
         user_id: userId,
         content: newMessage.trim() || null,
         image_url: imageUrl,
         video_url: videoUrl,
-      })
+        created_at: new Date().toISOString(),
+      }
+
+      const { data: insertedMessage, error: messageError } = await supabase
+        .from("direct_messages")
+        .insert(newMessageData)
+        .select()
+        .single()
 
       if (messageError) {
         console.error("[v0] Error inserting message:", messageError)
@@ -210,6 +237,16 @@ export function ConversationContent({ conversationId, userId }: { conversationId
         setIsSending(false)
         return
       }
+
+      console.log("[v0] Message sent successfully:", insertedMessage)
+
+      // Optimistically add message to state
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === insertedMessage.id)) {
+          return prev
+        }
+        return [...prev, insertedMessage]
+      })
 
       setNewMessage("")
       clearAttachment()
@@ -219,6 +256,14 @@ export function ConversationContent({ conversationId, userId }: { conversationId
     } finally {
       setIsSending(false)
     }
+  }
+
+  const markAsRead = async () => {
+    await supabase.from("message_reads").upsert({
+      conversation_id: conversationId,
+      user_id: userId,
+      last_read_at: new Date().toISOString(),
+    })
   }
 
   return (
