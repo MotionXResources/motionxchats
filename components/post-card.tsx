@@ -1,0 +1,368 @@
+"use client"
+
+import { useState, useEffect, useMemo } from "react"
+import { Card } from "@/components/ui/card"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { Heart, MessageCircle, Repeat2, User, Trash2 } from "lucide-react"
+import Link from "next/link"
+import { formatDistanceToNow } from "date-fns"
+import { createBrowserClient } from "@/lib/supabase/client"
+
+interface Post {
+  id: string
+  user_id: string
+  content: string | null
+  image_url: string | null
+  video_url: string | null
+  created_at: string
+}
+
+interface Profile {
+  id: string
+  username: string
+  display_name: string
+  avatar_url: string | null
+}
+
+interface PostCardProps {
+  post: Post
+  profile?: Profile
+  currentUserId: string
+}
+
+interface Comment {
+  id: string
+  user_id: string
+  content: string
+  created_at: string
+}
+
+export function PostCard({ post, profile, currentUserId }: PostCardProps) {
+  const [likesCount, setLikesCount] = useState(0)
+  const [commentsCount, setCommentsCount] = useState(0)
+  const [sharesCount, setSharesCount] = useState(0)
+  const [isLiked, setIsLiked] = useState(false)
+  const [isShared, setIsShared] = useState(false)
+  const [showComments, setShowComments] = useState(false)
+  const [comments, setComments] = useState<Comment[]>([])
+  const [commentProfiles, setCommentProfiles] = useState<Record<string, Profile>>({})
+  const [newComment, setNewComment] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const supabase = useMemo(() => createBrowserClient(), [])
+
+  useEffect(() => {
+    loadInteractions()
+    subscribeToInteractions()
+  }, [post.id])
+
+  const loadInteractions = async () => {
+    // Load likes
+    const { data: likes } = await supabase.from("likes").select("*").eq("post_id", post.id)
+    setLikesCount(likes?.length || 0)
+    setIsLiked(likes?.some((like) => like.user_id === currentUserId) || false)
+
+    // Load comments
+    const { data: comments } = await supabase
+      .from("comments")
+      .select("*")
+      .eq("post_id", post.id)
+      .order("created_at", { ascending: true })
+    setCommentsCount(comments?.length || 0)
+    if (comments) {
+      setComments(comments)
+      // Load profiles for commenters
+      const userIds = [...new Set(comments.map((c) => c.user_id))]
+      userIds.forEach(loadCommentProfile)
+    }
+
+    // Load shares
+    const { data: shares } = await supabase.from("shares").select("*").eq("post_id", post.id)
+    setSharesCount(shares?.length || 0)
+    setIsShared(shares?.some((share) => share.user_id === currentUserId) || false)
+  }
+
+  const loadCommentProfile = async (userId: string) => {
+    if (commentProfiles[userId]) return
+    const { data } = await supabase.from("profiles").select("*").eq("id", userId).single()
+    if (data) {
+      setCommentProfiles((prev) => ({ ...prev, [userId]: data }))
+    }
+  }
+
+  const subscribeToInteractions = () => {
+    // Subscribe to likes
+    const likesChannel = supabase
+      .channel(`post-likes-${post.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "likes", filter: `post_id=eq.${post.id}` }, () => {
+        loadInteractions()
+      })
+      .subscribe()
+
+    // Subscribe to comments
+    const commentsChannel = supabase
+      .channel(`post-comments-${post.id}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "comments", filter: `post_id=eq.${post.id}` },
+        (payload) => {
+          const newComment = payload.new as Comment
+          setComments((prev) => [...prev, newComment])
+          setCommentsCount((prev) => prev + 1)
+          loadCommentProfile(newComment.user_id)
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "comments", filter: `post_id=eq.${post.id}` },
+        (payload) => {
+          const deletedComment = payload.old as Comment
+          setComments((prev) => prev.filter((c) => c.id !== deletedComment.id))
+          setCommentsCount((prev) => prev - 1)
+        },
+      )
+      .subscribe()
+
+    // Subscribe to shares
+    const sharesChannel = supabase
+      .channel(`post-shares-${post.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "shares", filter: `post_id=eq.${post.id}` },
+        () => {
+          loadInteractions()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(likesChannel)
+      supabase.removeChannel(commentsChannel)
+      supabase.removeChannel(sharesChannel)
+    }
+  }
+
+  const handleLike = async () => {
+    const wasLiked = isLiked
+
+    // Optimistic update
+    setIsLiked(!wasLiked)
+    setLikesCount((prev) => (wasLiked ? prev - 1 : prev + 1))
+
+    try {
+      if (wasLiked) {
+        const { error } = await supabase.from("likes").delete().eq("post_id", post.id).eq("user_id", currentUserId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from("likes").insert({ post_id: post.id, user_id: currentUserId })
+        if (error) throw error
+      }
+    } catch (error) {
+      console.error("Error toggling like:", error)
+      // Revert on error
+      setIsLiked(wasLiked)
+      setLikesCount((prev) => (wasLiked ? prev + 1 : prev - 1))
+    }
+  }
+
+  const handleShare = async () => {
+    const wasShared = isShared
+
+    // Optimistic update
+    setIsShared(!wasShared)
+    setSharesCount((prev) => (wasShared ? prev - 1 : prev + 1))
+
+    try {
+      if (wasShared) {
+        const { error } = await supabase.from("shares").delete().eq("post_id", post.id).eq("user_id", currentUserId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from("shares").insert({ post_id: post.id, user_id: currentUserId })
+        if (error) throw error
+      }
+    } catch (error) {
+      console.error("Error toggling share:", error)
+      // Revert on error
+      setIsShared(wasShared)
+      setSharesCount((prev) => (wasShared ? prev + 1 : prev - 1))
+    }
+  }
+
+  const handleComment = async () => {
+    if (!newComment.trim() || isSubmitting) return
+
+    setIsSubmitting(true)
+    try {
+      await supabase.from("comments").insert({
+        post_id: post.id,
+        user_id: currentUserId,
+        content: newComment.trim(),
+      })
+      setNewComment("")
+    } catch (error) {
+      console.error("Error posting comment:", error)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleDeleteComment = async (commentId: string) => {
+    // Optimistic update
+    setComments((prev) => prev.filter((c) => c.id !== commentId))
+    setCommentsCount((prev) => prev - 1)
+
+    try {
+      const { error } = await supabase.from("comments").delete().eq("id", commentId).eq("user_id", currentUserId)
+      if (error) throw error
+    } catch (error) {
+      console.error("Error deleting comment:", error)
+      // Reload on error to restore state
+      loadInteractions()
+    }
+  }
+
+  return (
+    <Card className="p-4 transition-all duration-300 hover:bg-muted/50 hover:shadow-md hover:border-primary/20">
+      <div className="flex gap-3">
+        <Link href={`/profile/${post.user_id}`}>
+          <Avatar className="h-10 w-10 cursor-pointer transition-all duration-200 hover:scale-110 hover:ring-2 hover:ring-primary active:scale-95">
+            <AvatarImage src={profile?.avatar_url || ""} />
+            <AvatarFallback className="bg-muted">
+              <User className="h-5 w-5 text-muted-foreground" />
+            </AvatarFallback>
+          </Avatar>
+        </Link>
+
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <Link href={`/profile/${post.user_id}`} className="font-semibold hover:underline">
+              {profile?.display_name || "Loading..."}
+            </Link>
+            <span className="text-sm text-muted-foreground">@{profile?.username || "..."}</span>
+            <span className="text-sm text-muted-foreground">
+              · {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
+            </span>
+          </div>
+
+          {post.content && <p className="mt-2 text-pretty whitespace-pre-wrap">{post.content}</p>}
+
+          {post.image_url && (
+            <div className="mt-3 rounded-lg overflow-hidden border">
+              <img src={post.image_url || "/placeholder.svg"} alt="Post" className="w-full max-h-96 object-cover" />
+            </div>
+          )}
+
+          {post.video_url && (
+            <div className="mt-3 rounded-lg overflow-hidden border">
+              <video src={post.video_url} controls className="w-full max-h-96" />
+            </div>
+          )}
+
+          <div className="flex items-center gap-4 mt-3 pt-3 border-t">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLike}
+              className={`transition-all duration-200 hover:scale-110 active:scale-90 ${isLiked ? "text-red-500" : ""}`}
+            >
+              <Heart className={`h-5 w-5 mr-1 transition-all ${isLiked ? "fill-current scale-110" : ""}`} />
+              {likesCount > 0 && <span>{likesCount}</span>}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowComments(!showComments)}
+              className="transition-all duration-200 hover:scale-110 active:scale-90"
+            >
+              <MessageCircle className="h-5 w-5 mr-1" />
+              {commentsCount > 0 && <span>{commentsCount}</span>}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleShare}
+              className={`transition-all duration-200 hover:scale-110 active:scale-90 ${isShared ? "text-green-600" : ""}`}
+            >
+              <Repeat2 className={`h-5 w-5 mr-1 transition-all ${isShared ? "scale-110" : ""}`} />
+              {sharesCount > 0 && <span>{sharesCount}</span>}
+            </Button>
+          </div>
+
+          {showComments && (
+            <div className="mt-4 space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+              {/* Comment input */}
+              <div className="flex gap-2">
+                <Textarea
+                  placeholder="Write a comment..."
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  className="min-h-[60px] resize-none transition-all duration-200 focus:scale-[1.01]"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault()
+                      handleComment()
+                    }
+                  }}
+                />
+                <Button
+                  onClick={handleComment}
+                  disabled={!newComment.trim() || isSubmitting}
+                  className="transition-all duration-200 hover:scale-105 active:scale-95"
+                >
+                  {isSubmitting ? "..." : "Post"}
+                </Button>
+              </div>
+
+              {/* Comments list */}
+              {comments.length > 0 && (
+                <div className="space-y-3 pl-3 border-l-2">
+                  {comments.map((comment, index) => (
+                    <div
+                      key={comment.id}
+                      className="flex gap-2 animate-in fade-in slide-in-from-left-2 duration-300"
+                      style={{ animationDelay: `${index * 50}ms` }}
+                    >
+                      <Link href={`/profile/${comment.user_id}`}>
+                        <Avatar className="h-7 w-7 cursor-pointer transition-all duration-200 hover:scale-110 hover:ring-2 hover:ring-primary">
+                          <AvatarImage src={commentProfiles[comment.user_id]?.avatar_url || ""} />
+                          <AvatarFallback className="bg-muted">
+                            <User className="h-3 w-3 text-muted-foreground" />
+                          </AvatarFallback>
+                        </Avatar>
+                      </Link>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <Link href={`/profile/${comment.user_id}`} className="text-sm font-semibold hover:underline">
+                            {commentProfiles[comment.user_id]?.display_name || "Loading..."}
+                          </Link>
+                          <span className="text-xs text-muted-foreground">
+                            {formatDistanceToNow(new Date(comment.created_at), { addSuffix: true })}
+                          </span>
+                        </div>
+                        <p className="text-sm mt-1">{comment.content}</p>
+                      </div>
+                      {comment.user_id === currentUserId && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteComment(comment.id)}
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive transition-all duration-200 hover:scale-110 active:scale-90"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+}
