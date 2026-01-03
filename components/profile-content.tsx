@@ -161,77 +161,93 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
       return
     }
 
-    // Check if conversation exists
-    const { data: myParticipations } = await supabase
-      .from("conversation_participants")
-      .select("conversation_id")
-      .eq("user_id", currentUserId)
+    console.log("[v0] Starting DM creation - Target user:", profileId)
+    console.log("[v0] Current user:", currentUserId)
 
-    if (myParticipations) {
-      // Check each conversation to see if it includes the target user
-      for (const participation of myParticipations) {
-        const { data: participants } = await supabase
-          .from("conversation_participants")
-          .select("user_id")
-          .eq("conversation_id", participation.conversation_id)
+    try {
+      // Check if conversation exists
+      const { data: myParticipations, error: fetchError } = await supabase
+        .from("conversation_participants")
+        .select("conversation_id")
+        .eq("user_id", currentUserId)
 
-        if (participants && participants.some((p) => p.user_id === profileId)) {
-          // Found existing conversation
-          router.push(`/messages/${participation.conversation_id}`)
-          return
+      console.log("[v0] My participations:", myParticipations?.length || 0)
+
+      if (fetchError) {
+        console.error("[v0] Error fetching participations:", fetchError)
+      }
+
+      if (myParticipations && myParticipations.length > 0) {
+        // Check each conversation to see if it includes the target user
+        for (const participation of myParticipations) {
+          const { data: participants } = await supabase
+            .from("conversation_participants")
+            .select("user_id")
+            .eq("conversation_id", participation.conversation_id)
+
+          if (participants && participants.some((p) => p.user_id === profileId)) {
+            console.log("[v0] Found existing conversation:", participation.conversation_id)
+            router.push(`/messages/${participation.conversation_id}`)
+            return
+          }
         }
       }
-    }
 
-    // Create new conversation
-    // First check DM permissions using the function
-    const { data: canDM, error: permError } = await supabase.rpc("can_send_dm_to_user", {
-      target_user_id: profileId,
-    })
+      console.log("[v0] No existing conversation, creating new one")
 
-    if (permError) {
-      console.error("[v0] Error checking DM permissions:", permError)
-    }
+      // Create conversation
+      const { data: newConv, error: convError } = await supabase.from("conversations").insert({}).select().single()
 
-    if (canDM === false) {
-      alert(dmRestrictionMessage || "You cannot message this user")
-      return
-    }
-
-    const { data: newConv, error: convError } = await supabase.from("conversations").insert({}).select().single()
-
-    if (convError) {
-      console.error("[v0] Error creating conversation:", convError)
-      alert("Failed to create conversation")
-      return
-    }
-
-    if (newConv) {
-      // Add both participants - add current user first
-      const { error: currentUserError } = await supabase
-        .from("conversation_participants")
-        .insert({ conversation_id: newConv.id, user_id: currentUserId })
-
-      if (currentUserError) {
-        console.error("[v0] Error adding current user:", currentUserError)
-        await supabase.from("conversations").delete().eq("id", newConv.id)
-        alert("Failed to create conversation")
+      if (convError) {
+        console.error("[v0] Conversation creation error:", convError)
+        alert(`Failed to create conversation: ${convError.message}`)
         return
       }
 
-      // Then add the other user
-      const { error: otherUserError } = await supabase
-        .from("conversation_participants")
-        .insert({ conversation_id: newConv.id, user_id: profileId })
+      console.log("[v0] Conversation created:", newConv?.id)
 
-      if (otherUserError) {
-        console.error("[v0] Error adding other user:", otherUserError)
-        await supabase.from("conversations").delete().eq("id", newConv.id)
-        alert("Failed to add participant. Check if this user accepts messages from you.")
+      if (!newConv) {
+        alert("Failed to create conversation - no data returned")
         return
       }
 
+      // Add current user first
+      console.log("[v0] Adding current user as participant")
+      const { error: participant1Error } = await supabase.from("conversation_participants").insert({
+        conversation_id: newConv.id,
+        user_id: currentUserId,
+      })
+
+      if (participant1Error) {
+        console.error("[v0] Error adding current user:", participant1Error)
+        // Clean up the conversation
+        await supabase.from("conversations").delete().eq("id", newConv.id)
+        alert(`Failed to add you to conversation: ${participant1Error.message}`)
+        return
+      }
+
+      console.log("[v0] Current user added successfully")
+
+      // Add target user
+      console.log("[v0] Adding target user as participant")
+      const { error: participant2Error } = await supabase.from("conversation_participants").insert({
+        conversation_id: newConv.id,
+        user_id: profileId,
+      })
+
+      if (participant2Error) {
+        console.error("[v0] Error adding target user:", participant2Error)
+        // Clean up
+        await supabase.from("conversations").delete().eq("id", newConv.id)
+        alert(`Failed to add participant: ${participant2Error.message}`)
+        return
+      }
+
+      console.log("[v0] Target user added successfully, navigating to conversation")
       router.push(`/messages/${newConv.id}`)
+    } catch (error) {
+      console.error("[v0] Unexpected error in handleMessage:", error)
+      alert("An unexpected error occurred. Please try again.")
     }
   }
 
