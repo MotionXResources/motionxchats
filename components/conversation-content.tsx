@@ -36,7 +36,9 @@ export function ConversationContent({ conversationId, userId }: { conversationId
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null)
   const [attachmentType, setAttachmentType] = useState<"image" | "video" | null>(null)
   const [isSending, setIsSending] = useState(false)
+  const [otherUserTyping, setOtherUserTyping] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const typingTimeoutRef = useRef<NodeJS.Timeout>()
   const router = useRouter()
   const supabase = useMemo(() => createBrowserClient(), [])
 
@@ -44,7 +46,6 @@ export function ConversationContent({ conversationId, userId }: { conversationId
     loadOtherUser()
     loadMessages()
 
-    // Subscribe to new messages
     const channel = supabase
       .channel(`conversation-${conversationId}`)
       .on(
@@ -60,10 +61,26 @@ export function ConversationContent({ conversationId, userId }: { conversationId
           setMessages((prev) => [...prev, newMsg])
         },
       )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "typing_indicators",
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        (payload) => {
+          const indicator = payload.new as { user_id: string; is_typing: boolean }
+          if (indicator.user_id !== userId) {
+            setOtherUserTyping(indicator.is_typing)
+          }
+        },
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
+      updateTypingStatus(false)
     }
   }, [conversationId])
 
@@ -99,6 +116,32 @@ export function ConversationContent({ conversationId, userId }: { conversationId
     if (data) setMessages(data)
   }
 
+  const updateTypingStatus = async (isTyping: boolean) => {
+    await supabase.from("typing_indicators").upsert({
+      conversation_id: conversationId,
+      user_id: userId,
+      is_typing: isTyping,
+      updated_at: new Date().toISOString(),
+    })
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value)
+
+    // Update typing status
+    updateTypingStatus(true)
+
+    // Clear previous timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+    }
+
+    // Set new timeout to clear typing status
+    typingTimeoutRef.current = setTimeout(() => {
+      updateTypingStatus(false)
+    }, 2000)
+  }
+
   const handleAttachmentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -128,6 +171,8 @@ export function ConversationContent({ conversationId, userId }: { conversationId
     if (!newMessage.trim() && !attachmentFile) return
 
     setIsSending(true)
+    updateTypingStatus(false)
+
     try {
       let imageUrl: string | null = null
       let videoUrl: string | null = null
@@ -166,8 +211,6 @@ export function ConversationContent({ conversationId, userId }: { conversationId
         return
       }
 
-      console.log("[v0] Message sent successfully")
-
       setNewMessage("")
       clearAttachment()
     } catch (error) {
@@ -188,16 +231,16 @@ export function ConversationContent({ conversationId, userId }: { conversationId
               variant="ghost"
               size="icon"
               onClick={() => router.back()}
-              className="transition-transform active:scale-95"
+              className="transition-transform duration-200 active:scale-95 hover:scale-105"
             >
               <ArrowLeft className="h-5 w-5" />
             </Button>
             {otherUser && (
               <div
-                className="flex items-center gap-3 flex-1 cursor-pointer"
+                className="flex items-center gap-3 flex-1 cursor-pointer transition-all duration-200 hover:opacity-80"
                 onClick={() => router.push(`/profile/${otherUser.id}`)}
               >
-                <Avatar className="h-10 w-10">
+                <Avatar className="h-10 w-10 transition-transform duration-200 hover:scale-110">
                   <AvatarImage src={otherUser.avatar_url || ""} />
                   <AvatarFallback className="bg-muted">
                     <User className="h-5 w-5 text-muted-foreground" />
@@ -205,7 +248,9 @@ export function ConversationContent({ conversationId, userId }: { conversationId
                 </Avatar>
                 <div>
                   <h3 className="font-semibold">{otherUser.display_name}</h3>
-                  <p className="text-sm text-muted-foreground">@{otherUser.username}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {otherUserTyping ? <span className="animate-pulse">typing...</span> : `@${otherUser.username}`}
+                  </p>
                 </div>
               </div>
             )}
@@ -216,12 +261,16 @@ export function ConversationContent({ conversationId, userId }: { conversationId
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="container mx-auto px-4 py-4 max-w-2xl space-y-4">
-          {messages.map((message) => {
+          {messages.map((message, index) => {
             const isOwn = message.user_id === userId
             return (
-              <div key={message.id} className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
+              <div
+                key={message.id}
+                className={`flex animate-in fade-in slide-in-from-bottom-2 duration-300 ${isOwn ? "justify-end" : "justify-start"}`}
+                style={{ animationDelay: `${index * 20}ms` }}
+              >
                 <div
-                  className={`max-w-[70%] ${isOwn ? "bg-primary text-primary-foreground" : "bg-muted"} rounded-lg p-3`}
+                  className={`max-w-[70%] ${isOwn ? "bg-primary text-primary-foreground" : "bg-muted"} rounded-lg p-3 transition-all duration-200 hover:scale-[1.02]`}
                 >
                   {message.content && <p className="text-pretty whitespace-pre-wrap">{message.content}</p>}
 
@@ -256,8 +305,13 @@ export function ConversationContent({ conversationId, userId }: { conversationId
       <div className="border-t bg-background">
         <div className="container mx-auto px-4 py-4 max-w-2xl">
           {attachmentPreview && (
-            <div className="relative mb-3 rounded-lg overflow-hidden border inline-block">
-              <Button size="icon" variant="secondary" className="absolute top-2 right-2 z-10" onClick={clearAttachment}>
+            <div className="relative mb-3 rounded-lg overflow-hidden border inline-block animate-in fade-in slide-in-from-bottom-2 duration-200">
+              <Button
+                size="icon"
+                variant="secondary"
+                className="absolute top-2 right-2 z-10 transition-all duration-200 hover:scale-110 active:scale-90"
+                onClick={clearAttachment}
+              >
                 <X className="h-4 w-4" />
               </Button>
               {attachmentType === "image" ? (
@@ -269,7 +323,12 @@ export function ConversationContent({ conversationId, userId }: { conversationId
           )}
 
           <div className="flex gap-2">
-            <Button size="icon" variant="ghost" className="relative" disabled={isSending}>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="relative transition-all duration-200 hover:scale-110 active:scale-90"
+              disabled={isSending}
+            >
               <input
                 type="file"
                 accept="image/*,video/*"
@@ -283,7 +342,7 @@ export function ConversationContent({ conversationId, userId }: { conversationId
             <Input
               placeholder="Type a message..."
               value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault()
@@ -291,10 +350,14 @@ export function ConversationContent({ conversationId, userId }: { conversationId
                 }
               }}
               disabled={isSending}
-              className="flex-1"
+              className="flex-1 transition-all duration-200 focus:scale-[1.01]"
             />
 
-            <Button onClick={handleSend} disabled={(!newMessage.trim() && !attachmentFile) || isSending}>
+            <Button
+              onClick={handleSend}
+              disabled={(!newMessage.trim() && !attachmentFile) || isSending}
+              className="transition-all duration-200 hover:scale-105 active:scale-95"
+            >
               <Send className="h-5 w-5" />
             </Button>
           </div>

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { User, ArrowLeft, Settings, MessageCircle, Lock } from "lucide-react"
+import { User, ArrowLeft, Settings, MessageCircle, Lock, BadgeCheck } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { ProfileSettings } from "@/components/profile-settings"
 import { PostCard } from "@/components/post-card"
@@ -20,6 +20,7 @@ interface Profile {
   likes_private?: boolean
   followers_private?: boolean
   allow_dm_from?: string
+  is_admin?: boolean
 }
 
 interface Post {
@@ -311,7 +312,10 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
           </div>
 
           <div>
-            <h2 className="text-xl font-bold">{profile.display_name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold">{profile.display_name}</h2>
+              {profile.is_admin && <BadgeCheck className="h-6 w-6 text-blue-500 fill-blue-500" />}
+            </div>
             <p className="text-muted-foreground">@{profile.username}</p>
           </div>
 

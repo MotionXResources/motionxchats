@@ -5,7 +5,7 @@ import { createBrowserClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card } from "@/components/ui/card"
-import { ArrowLeft, User, MessageSquare } from "lucide-react"
+import { ArrowLeft, User, MessageSquare, BadgeCheck } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { formatDistanceToNow } from "date-fns"
 
@@ -19,6 +19,7 @@ interface Profile {
   username: string
   display_name: string
   avatar_url: string | null
+  is_admin?: boolean
 }
 
 interface ConversationWithDetails {
@@ -50,7 +51,6 @@ export function MessagesContent({ userId }: { userId: string }) {
           filter: `user_id=eq.${userId}`,
         },
         () => {
-          console.log("[v0] Conversation participants changed, reloading...")
           loadConversations()
         },
       )
@@ -66,7 +66,6 @@ export function MessagesContent({ userId }: { userId: string }) {
           table: "direct_messages",
         },
         () => {
-          console.log("[v0] New message received, reloading conversations...")
           loadConversations()
         },
       )
@@ -79,139 +78,134 @@ export function MessagesContent({ userId }: { userId: string }) {
   }, [userId])
 
   const loadConversations = async () => {
-    console.log("[v0] Loading conversations for user:", userId)
     setLoading(true)
 
     try {
+      // Get all conversation IDs where user is a participant
       const { data: userConvs, error: convsError } = await supabase
         .from("conversation_participants")
         .select("conversation_id")
         .eq("user_id", userId)
 
-      if (convsError) {
-        console.error("[v0] Error fetching conversations:", convsError)
-        setLoading(false)
-        return
-      }
-
-      console.log("[v0] User participates in", userConvs?.length || 0, "conversations")
-
-      if (!userConvs || userConvs.length === 0) {
+      if (convsError || !userConvs || userConvs.length === 0) {
         setConversations([])
         setLoading(false)
         return
       }
 
+      const conversationIds = userConvs.map((c) => c.conversation_id)
+
+      // Batch fetch all conversations
+      const { data: conversations, error: convError } = await supabase
+        .from("conversations")
+        .select("*")
+        .in("id", conversationIds)
+
+      if (convError) {
+        console.error("Error fetching conversations:", convError)
+        setLoading(false)
+        return
+      }
+
+      // Batch fetch all participants for these conversations
+      const { data: allParticipants, error: partError } = await supabase
+        .from("conversation_participants")
+        .select("conversation_id, user_id")
+        .in("conversation_id", conversationIds)
+
+      if (partError) {
+        console.error("Error fetching participants:", partError)
+        setLoading(false)
+        return
+      }
+
+      // Get other user IDs (not current user)
+      const otherUserIds = allParticipants
+        .filter((p) => p.user_id !== userId)
+        .map((p) => p.user_id)
+        .filter((id, index, self) => self.indexOf(id) === index) // unique
+
+      // Batch fetch all profiles
+      const { data: profiles, error: profileError } = await supabase.from("profiles").select("*").in("id", otherUserIds)
+
+      if (profileError) {
+        console.error("Error fetching profiles:", profileError)
+        setLoading(false)
+        return
+      }
+
+      // Batch fetch all messages for these conversations
+      const { data: allMessages, error: messagesError } = await supabase
+        .from("direct_messages")
+        .select("conversation_id, content, created_at, user_id")
+        .in("conversation_id", conversationIds)
+        .order("created_at", { ascending: false })
+
+      if (messagesError) {
+        console.error("Error fetching messages:", messagesError)
+      }
+
+      // Batch fetch follow relationships
+      const { data: followRelationships, error: followError } = await supabase
+        .from("follows")
+        .select("follower_id, following_id")
+        .eq("follower_id", userId)
+        .in("following_id", otherUserIds)
+
+      if (followError) {
+        console.error("Error checking follow relationships:", followError)
+      }
+
+      // Build conversation map
       const conversationMap = new Map<string, ConversationWithDetails>()
+      const followingSet = new Set(followRelationships?.map((f) => f.following_id) || [])
 
-      for (const conv of userConvs) {
-        console.log("[v0] Loading conversation:", conv.conversation_id)
+      for (const conv of conversations || []) {
+        // Find other participant
+        const otherParticipant = allParticipants.find((p) => p.conversation_id === conv.id && p.user_id !== userId)
 
-        // Get conversation
-        const { data: conversation, error: convError } = await supabase
-          .from("conversations")
-          .select("*")
-          .eq("id", conv.conversation_id)
-          .single()
+        if (!otherParticipant) continue
 
-        if (convError) {
-          console.error("[v0] Error fetching conversation:", convError)
-          continue
+        // Find profile
+        const profile = profiles?.find((p) => p.id === otherParticipant.user_id)
+        if (!profile) continue
+
+        // Find messages for this conversation
+        const convMessages = allMessages?.filter((m) => m.conversation_id === conv.id) || []
+        const hasMessages = convMessages.length > 0
+        const isFollowing = followingSet.has(otherParticipant.user_id)
+
+        // Skip if no messages and not following
+        if (!hasMessages && !isFollowing) continue
+
+        const lastMessage = convMessages[0]
+
+        const conversationDetail: ConversationWithDetails = {
+          conversation: conv,
+          otherUser: profile,
+          lastMessage: lastMessage || undefined,
         }
 
-        // Get other participant
-        const { data: otherParticipant, error: partError } = await supabase
-          .from("conversation_participants")
-          .select("user_id")
-          .eq("conversation_id", conv.conversation_id)
-          .neq("user_id", userId)
-          .single()
+        // Keep only most recent conversation per user
+        const existingConv = conversationMap.get(otherParticipant.user_id)
+        const currentTime = lastMessage?.created_at || conv.created_at
+        const existingTime = existingConv?.lastMessage?.created_at || existingConv?.conversation.created_at
 
-        if (partError) {
-          console.error("[v0] Error fetching other participant:", partError)
-          continue
-        }
-
-        if (!otherParticipant) {
-          console.log("[v0] No other participant found for conversation:", conv.conversation_id)
-          continue
-        }
-
-        // Get other user's profile
-        const { data: profile, error: profileError } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", otherParticipant.user_id)
-          .single()
-
-        if (profileError) {
-          console.error("[v0] Error fetching profile:", profileError)
-          continue
-        }
-
-        const { data: messages, error: messagesError } = await supabase
-          .from("direct_messages")
-          .select("content, created_at")
-          .eq("conversation_id", conv.conversation_id)
-          .order("created_at", { ascending: false })
-
-        if (messagesError) {
-          console.error("[v0] Error fetching messages:", messagesError)
-          continue
-        }
-
-        const hasMessages = messages && messages.length > 0
-
-        const { data: followRelationship, error: followError } = await supabase
-          .from("follows")
-          .select("id")
-          .eq("follower_id", userId)
-          .eq("following_id", otherParticipant.user_id)
-          .maybeSingle()
-
-        if (followError) {
-          console.error("[v0] Error checking follow relationship:", followError)
-        }
-
-        const isFollowing = !!followRelationship
-
-        if (!hasMessages && !isFollowing) {
-          console.log("[v0] Skipping conversation - no messages and not following:", profile.username)
-          continue
-        }
-
-        const lastMessage = messages?.[0]
-
-        if (conversation && profile) {
-          const conversationDetail: ConversationWithDetails = {
-            conversation,
-            otherUser: profile,
-            lastMessage: lastMessage || undefined,
-          }
-
-          const existingConv = conversationMap.get(otherParticipant.user_id)
-          const currentTime = lastMessage?.created_at || conversation.created_at
-          const existingTime = existingConv?.lastMessage?.created_at || existingConv?.conversation.created_at
-
-          if (!existingConv || (existingTime && new Date(currentTime).getTime() > new Date(existingTime).getTime())) {
-            console.log("[v0] Added/Updated conversation with", profile.username)
-            conversationMap.set(otherParticipant.user_id, conversationDetail)
-          } else {
-            console.log("[v0] Skipped duplicate conversation with", profile.username)
-          }
+        if (!existingConv || new Date(currentTime).getTime() > new Date(existingTime).getTime()) {
+          conversationMap.set(otherParticipant.user_id, conversationDetail)
         }
       }
 
+      // Sort by most recent activity
       const conversationDetails = Array.from(conversationMap.values()).sort((a, b) => {
         const timeA = a.lastMessage?.created_at || a.conversation.created_at
         const timeB = b.lastMessage?.created_at || b.conversation.created_at
         return new Date(timeB).getTime() - new Date(timeA).getTime()
       })
 
-      console.log("[v0] Total unique conversations loaded:", conversationDetails.length)
       setConversations(conversationDetails)
     } catch (error) {
-      console.error("[v0] Unexpected error loading conversations:", error)
+      console.error("Unexpected error loading conversations:", error)
     } finally {
       setLoading(false)
     }
@@ -259,7 +253,10 @@ export function MessagesContent({ userId }: { userId: string }) {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">{conv.otherUser.display_name}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold">{conv.otherUser.display_name}</h3>
+                        {conv.otherUser.is_admin && <BadgeCheck className="h-5 w-5 text-blue-500 fill-blue-500" />}
+                      </div>
                       {conv.lastMessage && (
                         <span className="text-xs text-muted-foreground">
                           {formatDistanceToNow(new Date(conv.lastMessage.created_at), { addSuffix: true })}

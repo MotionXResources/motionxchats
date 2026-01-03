@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Heart, MessageCircle, Repeat2, User, Trash2, MoreVertical } from "lucide-react"
+import { Heart, MessageCircle, Repeat2, User, Trash2, MoreVertical, BadgeCheck } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
@@ -25,6 +25,7 @@ interface Profile {
   username: string
   display_name: string
   avatar_url: string | null
+  is_admin?: boolean
 }
 
 interface PostCardProps {
@@ -42,6 +43,7 @@ interface Comment {
 
 export function PostCard({ post, profile: initialProfile, currentUserId }: PostCardProps) {
   const [profile, setProfile] = useState<Profile | null>(initialProfile || null)
+  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(null)
   const [likesCount, setLikesCount] = useState(0)
   const [commentsCount, setCommentsCount] = useState(0)
   const [sharesCount, setSharesCount] = useState(0)
@@ -59,7 +61,8 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
     if (!initialProfile) {
       loadProfile()
     }
-  }, [initialProfile, post.user_id])
+    loadCurrentUserProfile()
+  }, [initialProfile, post.user_id, currentUserId])
 
   useEffect(() => {
     loadInteractions()
@@ -69,6 +72,22 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
   const loadProfile = async () => {
     const { data } = await supabase.from("profiles").select("*").eq("id", post.user_id).single()
     if (data) setProfile(data)
+  }
+
+  const loadCurrentUserProfile = async () => {
+    console.log("[v0] Loading current user profile for ID:", currentUserId)
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, username, display_name, avatar_url, is_admin")
+      .eq("id", currentUserId)
+      .single()
+
+    if (error) {
+      console.error("[v0] Error loading current user profile:", error)
+    } else {
+      console.log("[v0] Current user profile loaded:", data)
+      setCurrentUserProfile(data)
+    }
   }
 
   const loadInteractions = async () => {
@@ -226,18 +245,34 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
   const handleDeletePost = async () => {
     if (!confirm("Are you sure you want to delete this post?")) return
 
+    console.log("[v0] Attempting to delete post:", post.id)
+    console.log("[v0] Current user is admin:", currentUserProfile?.is_admin)
+
     try {
-      const { error } = await supabase.from("posts").delete().eq("id", post.id).eq("user_id", currentUserId)
+      const { error } = await supabase.from("posts").delete().eq("id", post.id)
 
-      if (error) throw error
+      if (error) {
+        console.error("[v0] Error deleting post:", error)
+        throw error
+      }
 
-      // Reload page to refresh feed
+      console.log("[v0] Post deleted successfully")
       window.location.reload()
     } catch (error) {
       console.error("Error deleting post:", error)
       alert("Failed to delete post")
     }
   }
+
+  const canDeletePost = post.user_id === currentUserId || currentUserProfile?.is_admin === true
+
+  console.log("[v0] Post delete check:", {
+    postId: post.id,
+    postUserId: post.user_id,
+    currentUserId,
+    isAdmin: currentUserProfile?.is_admin,
+    canDelete: canDeletePost,
+  })
 
   return (
     <Card className="p-4 transition-all duration-300 hover:bg-muted/50 hover:shadow-md hover:border-primary/20">
@@ -256,11 +291,12 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
             <Link href={`/profile/${post.user_id}`} className="font-semibold hover:underline">
               {profile?.display_name || "Loading..."}
             </Link>
+            {profile?.is_admin && <BadgeCheck className="h-5 w-5 text-blue-500 fill-blue-500" />}
             <span className="text-sm text-muted-foreground">@{profile?.username || "..."}</span>
             <span className="text-sm text-muted-foreground">
               · {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
             </span>
-            {post.user_id === currentUserId && (
+            {canDeletePost && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -372,13 +408,16 @@ export function PostCard({ post, profile: initialProfile, currentUserId }: PostC
                           <Link href={`/profile/${comment.user_id}`} className="text-sm font-semibold hover:underline">
                             {commentProfiles[comment.user_id]?.display_name || "Loading..."}
                           </Link>
+                          {commentProfiles[comment.user_id]?.is_admin && (
+                            <BadgeCheck className="h-4 w-4 text-blue-500 fill-blue-500" />
+                          )}
                           <span className="text-xs text-muted-foreground">
                             {formatDistanceToNow(new Date(comment.created_at), { addSuffix: true })}
                           </span>
                         </div>
                         <p className="text-sm mt-1">{comment.content}</p>
                       </div>
-                      {comment.user_id === currentUserId && (
+                      {(comment.user_id === currentUserId || currentUserProfile?.is_admin === true) && (
                         <Button
                           variant="ghost"
                           size="sm"
