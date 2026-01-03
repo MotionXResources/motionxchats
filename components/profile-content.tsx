@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { User, ArrowLeft, Settings, MessageCircle } from "lucide-react"
+import { User, ArrowLeft, Settings, MessageCircle, Lock } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { ProfileSettings } from "@/components/profile-settings"
 import { PostCard } from "@/components/post-card"
@@ -17,6 +17,9 @@ interface Profile {
   display_name: string
   avatar_url: string | null
   bio: string | null
+  likes_private?: boolean
+  followers_private?: boolean
+  allow_dm_from?: string
 }
 
 interface Post {
@@ -31,10 +34,14 @@ interface Post {
 export function ProfileContent({ profileId, currentUserId }: { profileId: string; currentUserId: string }) {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [posts, setPosts] = useState<Post[]>([])
+  const [likedPosts, setLikedPosts] = useState<Post[]>([])
   const [followersCount, setFollowersCount] = useState(0)
   const [followingCount, setFollowingCount] = useState(0)
   const [isFollowing, setIsFollowing] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [canViewFollowers, setCanViewFollowers] = useState(false)
+  const [canSendDM, setCanSendDM] = useState(false)
+  const [dmRestrictionMessage, setDmRestrictionMessage] = useState("")
   const router = useRouter()
 
   const supabase = useMemo(() => createBrowserClient(), [])
@@ -44,11 +51,52 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
     loadProfile()
     loadPosts()
     loadFollowStats()
+    loadLikedPosts()
   }, [profileId])
 
   const loadProfile = async () => {
     const { data } = await supabase.from("profiles").select("*").eq("id", profileId).single()
-    if (data) setProfile(data)
+    if (data) {
+      setProfile(data)
+      checkDMPermissions(data)
+    }
+  }
+
+  const checkDMPermissions = async (profileData: Profile) => {
+    if (isOwnProfile) {
+      setCanSendDM(false)
+      return
+    }
+
+    const allowDmFrom = profileData.allow_dm_from || "everyone"
+
+    if (allowDmFrom === "none") {
+      setCanSendDM(false)
+      setDmRestrictionMessage("This user doesn't accept messages")
+      return
+    }
+
+    if (allowDmFrom === "everyone") {
+      setCanSendDM(true)
+      return
+    }
+
+    if (allowDmFrom === "followers") {
+      // Check if current user follows this profile
+      const { data } = await supabase
+        .from("follows")
+        .select("*")
+        .eq("follower_id", currentUserId)
+        .eq("following_id", profileId)
+        .single()
+
+      if (data) {
+        setCanSendDM(true)
+      } else {
+        setCanSendDM(false)
+        setDmRestrictionMessage("Follow this user to send messages")
+      }
+    }
   }
 
   const loadPosts = async () => {
@@ -60,7 +108,30 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
     if (data) setPosts(data)
   }
 
+  const loadLikedPosts = async () => {
+    // Only load if viewing own profile or if likes are not private
+    if (!isOwnProfile && profile?.likes_private) {
+      setLikedPosts([])
+      return
+    }
+
+    const { data: likes } = await supabase.from("likes").select("post_id").eq("user_id", profileId)
+
+    if (likes && likes.length > 0) {
+      const postIds = likes.map((like) => like.post_id)
+      const { data: posts } = await supabase
+        .from("posts")
+        .select("*")
+        .in("id", postIds)
+        .order("created_at", { ascending: false })
+      if (posts) setLikedPosts(posts)
+    }
+  }
+
   const loadFollowStats = async () => {
+    const canView = isOwnProfile || !profile?.followers_private
+    setCanViewFollowers(canView)
+
     // Followers count
     const { data: followers } = await supabase.from("follows").select("*").eq("following_id", profileId)
     setFollowersCount(followers?.length || 0)
@@ -81,39 +152,85 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
       setIsFollowing(true)
       setFollowersCount((prev) => prev + 1)
     }
+    if (profile) checkDMPermissions(profile)
   }
 
   const handleMessage = async () => {
+    if (!canSendDM) {
+      alert(dmRestrictionMessage || "You cannot message this user")
+      return
+    }
+
     // Check if conversation exists
-    const { data: existingConversations } = await supabase
+    const { data: myParticipations } = await supabase
       .from("conversation_participants")
       .select("conversation_id")
       .eq("user_id", currentUserId)
 
-    if (existingConversations) {
-      for (const conv of existingConversations) {
-        const { data: otherParticipant } = await supabase
+    if (myParticipations) {
+      // Check each conversation to see if it includes the target user
+      for (const participation of myParticipations) {
+        const { data: participants } = await supabase
           .from("conversation_participants")
           .select("user_id")
-          .eq("conversation_id", conv.conversation_id)
-          .neq("user_id", currentUserId)
-          .single()
+          .eq("conversation_id", participation.conversation_id)
 
-        if (otherParticipant?.user_id === profileId) {
-          router.push(`/messages/${conv.conversation_id}`)
+        if (participants && participants.some((p) => p.user_id === profileId)) {
+          // Found existing conversation
+          router.push(`/messages/${participation.conversation_id}`)
           return
         }
       }
     }
 
     // Create new conversation
-    const { data: newConv } = await supabase.from("conversations").insert({}).select().single()
+    // First check DM permissions using the function
+    const { data: canDM, error: permError } = await supabase.rpc("can_send_dm_to_user", {
+      target_user_id: profileId,
+    })
+
+    if (permError) {
+      console.error("[v0] Error checking DM permissions:", permError)
+    }
+
+    if (canDM === false) {
+      alert(dmRestrictionMessage || "You cannot message this user")
+      return
+    }
+
+    const { data: newConv, error: convError } = await supabase.from("conversations").insert({}).select().single()
+
+    if (convError) {
+      console.error("[v0] Error creating conversation:", convError)
+      alert("Failed to create conversation")
+      return
+    }
 
     if (newConv) {
-      await supabase.from("conversation_participants").insert([
-        { conversation_id: newConv.id, user_id: currentUserId },
-        { conversation_id: newConv.id, user_id: profileId },
-      ])
+      // Add both participants - add current user first
+      const { error: currentUserError } = await supabase
+        .from("conversation_participants")
+        .insert({ conversation_id: newConv.id, user_id: currentUserId })
+
+      if (currentUserError) {
+        console.error("[v0] Error adding current user:", currentUserError)
+        await supabase.from("conversations").delete().eq("id", newConv.id)
+        alert("Failed to create conversation")
+        return
+      }
+
+      // Then add the other user
+      const { error: otherUserError } = await supabase
+        .from("conversation_participants")
+        .insert({ conversation_id: newConv.id, user_id: profileId })
+
+      if (otherUserError) {
+        console.error("[v0] Error adding other user:", otherUserError)
+        await supabase.from("conversations").delete().eq("id", newConv.id)
+        alert("Failed to add participant. Check if this user accepts messages from you.")
+        return
+      }
+
       router.push(`/messages/${newConv.id}`)
     }
   }
@@ -179,6 +296,8 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
                     variant="outline"
                     size="icon"
                     className="transition-all duration-200 hover:scale-110 active:scale-95 bg-transparent"
+                    disabled={!canSendDM}
+                    title={canSendDM ? "Send message" : dmRestrictionMessage}
                   >
                     <MessageCircle className="h-4 w-4" />
                   </Button>
@@ -195,14 +314,23 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
           {profile.bio && <p className="text-pretty">{profile.bio}</p>}
 
           <div className="flex gap-4 text-sm">
-            <div>
-              <span className="font-semibold">{followingCount}</span>{" "}
-              <span className="text-muted-foreground">Following</span>
-            </div>
-            <div>
-              <span className="font-semibold">{followersCount}</span>{" "}
-              <span className="text-muted-foreground">Followers</span>
-            </div>
+            {canViewFollowers ? (
+              <>
+                <div>
+                  <span className="font-semibold">{followingCount}</span>{" "}
+                  <span className="text-muted-foreground">Following</span>
+                </div>
+                <div>
+                  <span className="font-semibold">{followersCount}</span>{" "}
+                  <span className="text-muted-foreground">Followers</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Lock className="h-4 w-4" />
+                <span>Followers and following are private</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -214,6 +342,7 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
             </TabsTrigger>
             <TabsTrigger value="likes" className="flex-1 transition-all duration-200 data-[state=active]:scale-105">
               Likes
+              {!isOwnProfile && profile.likes_private && <Lock className="h-3 w-3 ml-1" />}
             </TabsTrigger>
           </TabsList>
 
@@ -236,14 +365,44 @@ export function ProfileContent({ profileId, currentUserId }: { profileId: string
           </TabsContent>
 
           <TabsContent value="likes" className="space-y-4 mt-4">
-            <Card className="p-8 text-center text-muted-foreground">
-              <p>Liked posts will appear here</p>
-            </Card>
+            {!isOwnProfile && profile.likes_private ? (
+              <Card className="p-8 text-center">
+                <Lock className="h-12 w-12 mx-auto mb-3 text-muted-foreground" />
+                <p className="font-medium">Liked posts are private</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  This user has chosen to keep their liked posts private
+                </p>
+              </Card>
+            ) : likedPosts.length > 0 ? (
+              likedPosts.map((post, index) => (
+                <div
+                  key={post.id}
+                  className="animate-in fade-in slide-in-from-bottom-4 duration-500"
+                  style={{ animationDelay: `${index * 50}ms` }}
+                >
+                  <PostCard post={post} currentUserId={currentUserId} />
+                </div>
+              ))
+            ) : (
+              <Card className="p-8 text-center text-muted-foreground">
+                <p>No liked posts yet</p>
+              </Card>
+            )}
           </TabsContent>
         </Tabs>
       </div>
 
-      {showSettings && profile && <ProfileSettings profile={profile} onClose={() => setShowSettings(false)} />}
+      {showSettings && profile && (
+        <ProfileSettings
+          profile={profile}
+          onClose={() => {
+            setShowSettings(false)
+            loadProfile()
+            loadFollowStats()
+            loadLikedPosts()
+          }}
+        />
+      )}
     </div>
   )
 }

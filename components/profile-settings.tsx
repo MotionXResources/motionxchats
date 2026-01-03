@@ -9,9 +9,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { createClient } from "@/lib/supabase/client"
 import { uploadFile } from "@/app/actions/upload"
-import { X, Upload, Loader2 } from "lucide-react"
+import { X, Upload, Loader2, Shield } from "lucide-react"
+import { Separator } from "@/components/ui/separator"
 
 interface ProfileSettingsProps {
   profile: {
@@ -20,6 +23,9 @@ interface ProfileSettingsProps {
     display_name: string
     avatar_url?: string
     bio?: string
+    likes_private?: boolean
+    followers_private?: boolean
+    allow_dm_from?: string
   }
   onClose: () => void
 }
@@ -29,6 +35,9 @@ export function ProfileSettings({ profile, onClose }: ProfileSettingsProps) {
   const [displayName, setDisplayName] = useState(profile.display_name)
   const [bio, setBio] = useState(profile.bio || "")
   const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url)
+  const [likesPrivate, setLikesPrivate] = useState(profile.likes_private || false)
+  const [followersPrivate, setFollowersPrivate] = useState(profile.followers_private || false)
+  const [allowDmFrom, setAllowDmFrom] = useState(profile.allow_dm_from || "everyone")
   const [isLoading, setIsLoading] = useState(false)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const router = useRouter()
@@ -74,6 +83,9 @@ export function ProfileSettings({ profile, onClose }: ProfileSettingsProps) {
           display_name: displayName,
           bio,
           avatar_url: avatarUrl,
+          likes_private: likesPrivate,
+          followers_private: followersPrivate,
+          allow_dm_from: allowDmFrom,
         })
         .eq("id", profile.id)
 
@@ -91,8 +103,8 @@ export function ProfileSettings({ profile, onClose }: ProfileSettingsProps) {
 
   return (
     <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-background border rounded-lg shadow-lg w-full max-w-md animate-in fade-in-0 zoom-in-95">
-        <div className="flex items-center justify-between p-6 border-b">
+      <div className="bg-background border rounded-lg shadow-lg w-full max-w-md max-h-[90vh] overflow-y-auto animate-in fade-in-0 zoom-in-95">
+        <div className="flex items-center justify-between p-6 border-b sticky top-0 bg-background z-10">
           <h2 className="text-xl font-semibold">Edit Profile</h2>
           <Button variant="ghost" size="icon" onClick={onClose} className="transition-transform active:scale-95">
             <X className="h-5 w-5" />
@@ -151,8 +163,56 @@ export function ProfileSettings({ profile, onClose }: ProfileSettingsProps) {
               rows={3}
             />
           </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-muted-foreground" />
+              <h3 className="text-lg font-semibold">Privacy Settings</h3>
+            </div>
+
+            <div className="space-y-4 pl-7">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="likes-private" className="text-sm font-medium">
+                    Private Likes
+                  </Label>
+                  <p className="text-xs text-muted-foreground">Only you can see what posts you've liked</p>
+                </div>
+                <Switch id="likes-private" checked={likesPrivate} onCheckedChange={setLikesPrivate} />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <Label htmlFor="followers-private" className="text-sm font-medium">
+                    Private Followers
+                  </Label>
+                  <p className="text-xs text-muted-foreground">Only you can see your followers and following lists</p>
+                </div>
+                <Switch id="followers-private" checked={followersPrivate} onCheckedChange={setFollowersPrivate} />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="dm-permissions" className="text-sm font-medium">
+                  Who can message you
+                </Label>
+                <Select value={allowDmFrom} onValueChange={setAllowDmFrom}>
+                  <SelectTrigger id="dm-permissions">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="everyone">Everyone</SelectItem>
+                    <SelectItem value="followers">People you follow</SelectItem>
+                    <SelectItem value="none">No one</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Control who can start conversations with you</p>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="flex justify-end gap-2 p-6 border-t">
+        <div className="flex justify-end gap-2 p-6 border-t sticky bottom-0 bg-background">
           <Button variant="outline" onClick={onClose} className="transition-transform active:scale-95 bg-transparent">
             Cancel
           </Button>

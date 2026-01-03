@@ -39,7 +39,8 @@ interface Comment {
   created_at: string
 }
 
-export function PostCard({ post, profile, currentUserId }: PostCardProps) {
+export function PostCard({ post, profile: initialProfile, currentUserId }: PostCardProps) {
+  const [profile, setProfile] = useState<Profile | null>(initialProfile || null)
   const [likesCount, setLikesCount] = useState(0)
   const [commentsCount, setCommentsCount] = useState(0)
   const [sharesCount, setSharesCount] = useState(0)
@@ -54,31 +55,38 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
   const supabase = useMemo(() => createBrowserClient(), [])
 
   useEffect(() => {
+    if (!initialProfile) {
+      loadProfile()
+    }
+  }, [initialProfile, post.user_id])
+
+  useEffect(() => {
     loadInteractions()
     subscribeToInteractions()
   }, [post.id])
 
+  const loadProfile = async () => {
+    const { data } = await supabase.from("profiles").select("*").eq("id", post.user_id).single()
+    if (data) setProfile(data)
+  }
+
   const loadInteractions = async () => {
-    // Load likes
     const { data: likes } = await supabase.from("likes").select("*").eq("post_id", post.id)
     setLikesCount(likes?.length || 0)
     setIsLiked(likes?.some((like) => like.user_id === currentUserId) || false)
 
-    // Load comments
-    const { data: comments } = await supabase
+    const { data: commentsData } = await supabase
       .from("comments")
       .select("*")
       .eq("post_id", post.id)
       .order("created_at", { ascending: true })
-    setCommentsCount(comments?.length || 0)
-    if (comments) {
-      setComments(comments)
-      // Load profiles for commenters
-      const userIds = [...new Set(comments.map((c) => c.user_id))]
+    setCommentsCount(commentsData?.length || 0)
+    if (commentsData) {
+      setComments(commentsData)
+      const userIds = [...new Set(commentsData.map((c) => c.user_id))]
       userIds.forEach(loadCommentProfile)
     }
 
-    // Load shares
     const { data: shares } = await supabase.from("shares").select("*").eq("post_id", post.id)
     setSharesCount(shares?.length || 0)
     setIsShared(shares?.some((share) => share.user_id === currentUserId) || false)
@@ -93,7 +101,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
   }
 
   const subscribeToInteractions = () => {
-    // Subscribe to likes
     const likesChannel = supabase
       .channel(`post-likes-${post.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "likes", filter: `post_id=eq.${post.id}` }, () => {
@@ -101,7 +108,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
       })
       .subscribe()
 
-    // Subscribe to comments
     const commentsChannel = supabase
       .channel(`post-comments-${post.id}`)
       .on(
@@ -125,7 +131,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
       )
       .subscribe()
 
-    // Subscribe to shares
     const sharesChannel = supabase
       .channel(`post-shares-${post.id}`)
       .on(
@@ -147,7 +152,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
   const handleLike = async () => {
     const wasLiked = isLiked
 
-    // Optimistic update
     setIsLiked(!wasLiked)
     setLikesCount((prev) => (wasLiked ? prev - 1 : prev + 1))
 
@@ -161,7 +165,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
       }
     } catch (error) {
       console.error("Error toggling like:", error)
-      // Revert on error
       setIsLiked(wasLiked)
       setLikesCount((prev) => (wasLiked ? prev + 1 : prev - 1))
     }
@@ -170,7 +173,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
   const handleShare = async () => {
     const wasShared = isShared
 
-    // Optimistic update
     setIsShared(!wasShared)
     setSharesCount((prev) => (wasShared ? prev - 1 : prev + 1))
 
@@ -184,7 +186,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
       }
     } catch (error) {
       console.error("Error toggling share:", error)
-      // Revert on error
       setIsShared(wasShared)
       setSharesCount((prev) => (wasShared ? prev + 1 : prev - 1))
     }
@@ -209,7 +210,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
   }
 
   const handleDeleteComment = async (commentId: string) => {
-    // Optimistic update
     setComments((prev) => prev.filter((c) => c.id !== commentId))
     setCommentsCount((prev) => prev - 1)
 
@@ -218,7 +218,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
       if (error) throw error
     } catch (error) {
       console.error("Error deleting comment:", error)
-      // Reload on error to restore state
       loadInteractions()
     }
   }
@@ -294,7 +293,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
 
           {showComments && (
             <div className="mt-4 space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
-              {/* Comment input */}
               <div className="flex gap-2">
                 <Textarea
                   placeholder="Write a comment..."
@@ -317,7 +315,6 @@ export function PostCard({ post, profile, currentUserId }: PostCardProps) {
                 </Button>
               </div>
 
-              {/* Comments list */}
               {comments.length > 0 && (
                 <div className="space-y-3 pl-3 border-l-2">
                   {comments.map((comment, index) => (
