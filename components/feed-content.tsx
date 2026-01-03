@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Paperclip, X, User, Home, MessageSquare, Users, Bell } from "lucide-react"
+import { Paperclip, X, User, Home, MessageSquare, Users, Bell, Search } from "lucide-react"
 import { uploadFile } from "@/app/actions/upload"
 import Link from "next/link"
 import { PostCard } from "@/components/post-card"
@@ -206,6 +206,7 @@ export function FeedContent({ userId }: { userId: string }) {
       .select("id", { count: "exact" })
       .eq("user_id", userId)
       .eq("is_read", false)
+      .neq("type", "message") // Exclude message notifications
 
     setUnreadNotifications(notifData?.length || 0)
 
@@ -247,6 +248,12 @@ export function FeedContent({ userId }: { userId: string }) {
                   <Link href="/feed">
                     <Home className="h-5 w-5 mr-2" />
                     Feed
+                  </Link>
+                </Button>
+                <Button variant="ghost" size="sm" asChild className="transition-all hover:scale-105 active:scale-95">
+                  <Link href="/search">
+                    <Search className="h-5 w-5 mr-2" />
+                    Search
                   </Link>
                 </Button>
                 <Button variant="ghost" size="sm" asChild className="transition-all hover:scale-105 active:scale-95">
